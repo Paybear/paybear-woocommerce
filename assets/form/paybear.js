@@ -72,7 +72,7 @@
             fiatCurrency: 'USD',
             fiatSign: '$',
             enableFiatTotal: true,
-            enablePoweredBy: true,
+            enablePoweredBy: false,
             enableBack: true,
             redirectTimeout: 5,
         };
@@ -325,8 +325,11 @@
         }
 
         // clear payments start events
+        var temp = document.createElement('div');
+        temp.innerHTML = state.html;
+        var paymentStartScreenHTML = temp.querySelector('.P-Payment__start');
+        var newPaymentStartScreen = paymentStartScreenHTML.cloneNode(true);
         var paymentStartScreen = document.querySelector('.P-Payment__start');
-        var newPaymentStartScreen = paymentStartScreen.cloneNode(true);
         paymentStartScreen.parentNode.replaceChild(newPaymentStartScreen, paymentStartScreen);
 
         if (state.currencies.length > 1) {
@@ -354,11 +357,11 @@
         that.paymentBlock.removeAttribute('style');
 
         var selectedCoin = state.currencies[state.selected];
-        var rate = selectedCoin.rate;
+        var rate = +selectedCoin.rate;
         var code = selectedCoin.code;
         that.paymentHeader.classList.remove('P-Payment__header--red');
         that.paymentHeaderTitle.textContent = 'Waiting on Payment';
-        that.paymentHeaderHelper.innerHTML = 'Rate Locked 1 ' + code + ' : ' + options.fiatSign + rate + ' ' + options.fiatCurrency;
+        that.paymentHeaderHelper.innerHTML = 'Rate Locked 1 ' + code + ' : ' + options.fiatSign + (rate).toFixed(2) + ' ' + options.fiatCurrency;
         that.paymentHeaderHelper.removeAttribute('style');
 
         // timer
@@ -405,6 +408,7 @@
         // qr code
         var qr = document.querySelector('.P-Payment__qr img');
         if (selectedCoin.walletLink) {
+            selectedCoin.walletLink = selectedCoin.walletLink.replace(/%s(.+?)%s/, selectedCoin.address + '$1' + selectedCoin.coinsValue);
             qr.setAttribute('src', 'https://chart.googleapis.com/chart?chs=180x180&cht=qr&chl=' + encodeURIComponent(selectedCoin.walletLink));
         } else {
             qr.setAttribute('src', 'https://chart.googleapis.com/chart?chs=180x180&cht=qr&chl=' + encodeURIComponent(selectedCoin.address));
@@ -474,26 +478,36 @@
         // tabs
         paybearTabs.call(that);
 
-        state.checkStatusInterval = setInterval(function () {
-            var xhr = new XMLHttpRequest();
-            xhr.onload = function () {
-                if (xhr.status === 200) {
-                    var response = JSON.parse(xhr.responseText);
+        checkStatusXHR(options.statusUrl);
 
-                    if (response.confirmations) {
-                        paybearPaymentConfirming.call(that, response.confirmations);
-                    }
+        function checkStatusXHR(statusUrl) {
+            state.checkStatusInterval = setInterval(function () {
+                var xhr = new XMLHttpRequest();
+                xhr.onload = function () {
+                    if (xhr.status === 200) {
+                        var response = JSON.parse(xhr.responseText);
+                        if ((typeof response.confirmations === 'number' || typeof response.confirmations === 'string') && !Number.isNaN(+response.confirmations)) {
+                            paybearPaymentConfirming.call(that, response.confirmations);
+                        }
 
-                    if (response.success) {
-                        clearInterval(state.checkStatusInterval);
-                        paybearPaymentConfirmed.call(that, response.redirect_url);
+                        if (response.statusUrl) {
+                            var parser = document.createElement('a');
+                            parser.href = options.statusUrl;
+                            clearInterval(state.checkStatusInterval);
+                            checkStatusXHR(parser.protocol + '//' + parser.host + response.statusUrl);
+                        }
+
+                        if (response.success) {
+                            clearInterval(state.checkStatusInterval);
+                            paybearPaymentConfirmed.call(that, response.redirect_url);
+                        }
                     }
-                }
-            };
-            xhr.open('GET', options.statusUrl, true);
-            xhr.setRequestHeader('Content-Type', 'application/json');
-            xhr.send();
-        }, 10000);
+                };
+                xhr.open('GET', statusUrl, true);
+                xhr.setRequestHeader('Content-Type', 'application/json');
+                xhr.send();
+            }, 10000);
+        }
     }
 
     function paybearPaymentExpired() {
@@ -541,8 +555,22 @@
         var state = that.state;
         var isConfirming = state.isConfirming;
         var selectedCoin = state.currencies[state.selected];
+        var coinConfirmations = selectedCoin.maxConfirmations;
 
         if (!isConfirming) {
+            if (options.modal) {
+                that.topBackButton.removeAttribute('style');
+                that.topBackButton.removeEventListener('click', that.handleTopBackButton);
+
+                that.handleTopBackButton = function (event) {
+                    event.preventDefault();
+                    hideModal.call(that);
+                };
+                that.topBackButton.addEventListener('click', that.handleTopBackButton);
+            } else {
+                that.topBackButton.style.display = 'none';
+            }
+
             that.paymentHeader.classList.remove('P-Payment__header--red');
             window.removeEventListener('resize', that.resizeListener, true);
             clearInterval(state.interval);
@@ -572,8 +600,9 @@
                     paymentHelper.style.overflowY = 'scroll';
                 }
                 if (blockExplorer) {
+                    var blockExplorerLink = blockExplorer.replace(/%s/g, selectedCoin.address);
                     paymentHelper.querySelector('.block-explorer-li').style.display = 'block';
-                    paymentHelper.querySelector('.P-block-explorer').setAttribute('href', blockExplorer);
+                    paymentHelper.querySelector('.P-block-explorer').setAttribute('href', blockExplorerLink);
                 }
             });
             paymentHelperBtn.addEventListener('click', function () {
@@ -585,21 +614,21 @@
             that.paymentHeaderTitle.textContent = 'Confirming Payment';
 
             document.querySelector('.P-confirmations')
-                .innerHTML = 'Payment Detected. Waiting for ' + selectedCoin.confirmations +
-                (selectedCoin.confirmations === 1 ? ' Confirmation' : ' Confirmations');
+                .innerHTML = 'Payment Detected. Waiting for ' + coinConfirmations +
+                (coinConfirmations === 1 ? ' Confirmation' : ' Confirmations');
 
-            if (options.modal || options.onBackClick) {
+            if (options.modal) {
                 paymentConfirming.querySelector('.P-btn').addEventListener('click', function (e) {
                     e.preventDefault();
-                    paybearBack.call(that);
+                    hideModal.call(that);
                 });
             } else {
                 paymentConfirming.querySelector('.P-btn').style.display = 'none';
             }
         }
 
-        that.paymentHeaderHelper.textContent = confirmations + ' / ' + selectedCoin.confirmations + (selectedCoin.confirmations === 1 ? ' Confirmation' : ' Confirmations');
-        document.querySelector('.Confirming__icon').classList.value = 'Confirming__icon' + (selectedCoin.confirmations < 4 ? ' Confirming__icon--small' : '') + (selectedCoin.confirmations > 4 ? ' Confirming__icon--full' : '');
+        that.paymentHeaderHelper.textContent = confirmations + ' / ' + coinConfirmations + (coinConfirmations === 1 ? ' Confirmation' : ' Confirmations');
+        document.querySelector('.Confirming__icon').classList.value = 'Confirming__icon' + (coinConfirmations < 4 ? ' Confirming__icon--small' : '') + (coinConfirmations > 4 ? ' Confirming__icon--full' : '');
         document.querySelector('.Confirming__icon svg').classList.value = 'Confirming__pic Confirming__pic--' + confirmations;
         this.state.isConfirming = true;
     }
@@ -618,10 +647,11 @@
         paymentConfirmed.removeAttribute('style');
 
         //header
+        var coinConfirmations = +selectedCoin.maxConfirmations;
         that.paymentHeader.classList.remove('P-Payment__header--red');
         that.paymentHeader.classList.add('P-Payment__header--green');
         that.paymentHeaderTitle.textContent = 'Payment Confimed';
-        that.paymentHeaderHelper.textContent = selectedCoin.confirmations + (selectedCoin.confirmations === 1 ? ' Confirmation' : ' Confirmations') + ' found';
+        that.paymentHeaderHelper.textContent = coinConfirmations + (coinConfirmations === 1 ? ' Confirmation' : ' Confirmations') + ' found';
         that.paymentHeaderTimer.style.display = 'none';
         document.querySelector('.P-Payment__header__check').style.display = 'block';
 
@@ -641,8 +671,27 @@
                     e.preventDefault();
                     paybearBack.call(that);
                 });
+            }
+        } else {
+            paymentConfirmed.querySelector('p').style.display = 'none';
+            if (options.modal) {
+                var btn = paymentConfirmed.querySelector('.P-btn');
+                var newBtn = document.createElement('button');
+                newBtn.innerHTML = '<i class="P-btn__icon--close"></i> Close';
+                newBtn.classList.value = 'P-btn P-btn--sm';
+                btn.parentNode.replaceChild(newBtn, btn);
+                paymentConfirmed.querySelector('.P-btn').addEventListener('click', function (e) {
+                    e.preventDefault();
+                    hideModal.call(that);
+                });
+                that.topBackButton.removeEventListener('click', that.handleTopBackButton);
+                that.topBackButton.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    hideModal.call(that);
+                });
             } else {
-                that.topBackButton.style.display = 'none'
+                that.topBackButton.style.display = 'none';
+                paymentConfirmed.querySelector('.P-btn').style.display = 'none';
             }
         }
 
