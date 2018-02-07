@@ -5,7 +5,7 @@ if ( ! defined( 'ABSPATH' ) ) exit; // Exit if accessed directly
  * Plugin Name: Crypto Payment Gateway for WooCommerce by PayBear.io
  * Plugin URI: https://www.paybear.io/
  * Description: Allows to accept crypto payments such as Bitcoin (BTC) and Ethereum (ETH)
- * Version: 0.1
+ * Version: 0.9
  */
 
 add_action( 'plugins_loaded', 'paybear_gateway_load', 0 );
@@ -267,7 +267,7 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
         }
 
         //check API keys
-		if (!$this->get_option( 'api_secret' )) {
+		if (!$this->get_option( 'api_secret' ) || substr($this->get_option( 'api_secret' ), 0, 3)!='sec') {
 			echo '<div class="error"><p>' . sprintf( __( 'Please set your API keys in <a href="%1$s">PayBear Settings</a>', 'woocommerce' ), $this->get_setting_link() ) . '</p></div>';
         }
 	}
@@ -310,14 +310,12 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 			'api_secret' => array(
                             'title' => __( 'API Key (Secret)', 'woocommerce' ),
                             'type' => 'text',
-                            'description' => __( 'Sign up at https://www.paybear.io/ and get your key', 'woocommerce' ),
-                            'desc_tip'      => true,
+                            'description' => __( 'Starts with "sec". Sign up at https://www.paybear.io/ and get your key', 'woocommerce' ),
                         ),
 			'api_public' => array(
                             'title' => __( 'API Key (Public)', 'woocommerce' ),
                             'type' => 'text',
-                            'description' => __( 'Sign up at https://www.paybear.io/ and get your key', 'woocommerce' ),
-                            'desc_tip'      => true,
+                            'description' => __( 'Starts with "pub". Sign up at https://www.paybear.io/ and get your key', 'woocommerce' ),
                         ),
 			'title' => array(
 							'title' => __( 'Title', 'woocommerce' ),
@@ -450,7 +448,7 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 		    }
 
 			update_post_meta($order_id, $token . ' confirmations', $params->confirmations);
-			update_post_meta($order_id, $token . ' max_confirmations', $this->get_confirmations( $token ));
+			update_post_meta($order_id, $token . ' max_confirmations', $confirmations);
 
 
 			$timestamp = get_post_meta($order_id, $token . ' payment timestamp', true);
@@ -486,7 +484,10 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 	                        $process = false;
 
 	                        $currency = get_woocommerce_currency();
-	                        $order->update_status('on-hold', sprintf(__( 'Late Payment / Rate changed (%s %s paid, %s %s expected)', 'woocommerce' ), $fiatPaid, $currency, $order->get_total(), $currency));
+
+	                        $order->update_status('on-hold');
+	                        $note = sprintf(__( 'Late Payment / Rate changed (%s %s paid, %s %s expected)', 'woocommerce' ), $fiatPaid, $currency, $order->get_total(), $currency);
+	                        $order->add_order_note( $note, 1, false );
                         }
                     }
 
@@ -498,7 +499,10 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 	                self::log("PayBear IPN: wrong amount [" . $order_id . "]");
                     if (!empty($this->debug_email)) { mail($this->debug_email, "PayBear IPN: wrong amount [" . $order_id . "]", print_r($params, true)); }
 
-	                $order->update_status('on-hold', sprintf(__( 'Wrong Amount Paid (%s %s received, %s %s expected)', 'woocommerce' ), $amountPaid, strtoupper($token), $toPay, strtoupper($token)) );
+	                $order->update_status('on-hold' );
+	                $underpaid = round(($toPay-$amountPaid)*$this->get_exchange_rate($token), 2);
+	                $note = sprintf(__( 'Wrong Amount Paid (%s %s received, %s %s expected) - %s %s underpaid', 'woocommerce' ), $amountPaid, strtoupper($token), $toPay, strtoupper($token), get_woocommerce_currency_symbol(), $underpaid);
+	                $order->add_order_note( $note, 1, false );
                 }
 
                 wp_send_json($invoice); //stop processing callbacks
