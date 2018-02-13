@@ -181,8 +181,7 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 
     function token_enabled($token)
     {
-        $key = strtolower($token.'_enable');
-	    return ($this->get_option( $key )=='yes') ? true : false;
+	return true;
     }
 
     function token_minimum($token)
