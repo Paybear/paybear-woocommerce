@@ -63,7 +63,7 @@
             selected: 0,
             isConfirming: false,
             html: null,
-            isModalShown: false
+            isModalShown: false,
         };
 
         var defaults = {
@@ -75,6 +75,8 @@
             enablePoweredBy: false,
             enableBack: true,
             redirectTimeout: 5,
+            minOverpaymentFiat: 1,
+            maxUnderpaymentFiat: 0.01,
         };
 
         this.options = defaults;
@@ -86,7 +88,7 @@
         var options = that.options;
 
         this.resizeListener = function () {
-            paybearResizeFont(that.state.currencies[that.state.selected]['address']);
+            resizeFont(that.state.currencies[that.state.selected]['address']);
         };
 
         that.root = document.getElementById('paybear');
@@ -140,17 +142,13 @@
             initModal.call(that);
         }
 
-        if (options.enableFiatTotal && options.fiatValue) {
-            document.querySelector('.PayBear__Nav__price').removeAttribute('style');
-            document.querySelector('.PayBear__Nav__price').innerHTML = options.fiatSign + '<span>' + options.fiatValue.toFixed(2) + '</span>' + options.fiatCurrency;
-        }
         if (options.enablePoweredBy) {
             document.querySelector('.PayBear__brand-link').removeAttribute('style');
         }
 
         if (typeof options.currencies === 'string') {
             fetchCurrencies.call(that);
-        } else if (Array.isArray(options.currencies)) {
+        } else if (Array.isArray(options.currencies) && options.currencies.length) {
             state.currencies = options.currencies;
 
             if (state.currencies.length > 1) {
@@ -159,7 +157,7 @@
                 if (state.currencies[state.selected].currencyUrl) {
                     currencyUrlXHR.call(that);
                 } else {
-                    paybearPaymentStart.call(that);
+                    paymentStart.call(that);
                 }
             }
         } else {
@@ -191,7 +189,7 @@
                         if (currencies.length > 1) {
                             fillCoins.call(that);
                         } else {
-                            paybearPaymentStart.call(that);
+                            paymentStart.call(that);
                         }
 
                     } else {
@@ -247,7 +245,7 @@
                                 Object.assign(that.state.currencies[index], response);
 
                                 that.state.selected = index;
-                                paybearPaymentStart.call(that);
+                                paymentStart.call(that);
                             } catch(e) {
                                 handleCurrencyError.call(that);
                             }
@@ -261,7 +259,7 @@
                     xhr.send();
                 } else {
                     that.state.selected = index;
-                    paybearPaymentStart.call(that);
+                    paymentStart.call(that);
                 }
             };
 
@@ -319,7 +317,7 @@
         that.paymentHeaderHelper.removeAttribute('style');
     }
 
-    function paybearPaymentStart() {
+    function paymentStart(hideTopBack) {
         var that = this;
         var state = that.state;
         var options = that.options;
@@ -339,26 +337,30 @@
         var paymentStartScreen = document.querySelector('.P-Payment__start');
         paymentStartScreen.parentNode.replaceChild(newPaymentStartScreen, paymentStartScreen);
 
-        if (state.currencies.length > 1) {
-            that.topBackButton.removeAttribute('style');
+        if (hideTopBack) {
             that.topBackButton.removeEventListener('click', that.handleTopBackButton);
+            that.topBackButton.style.display = 'none';
+        } else {
+            if (state.currencies.length > 1) {
+                that.topBackButton.removeAttribute('style');
+                that.topBackButton.removeEventListener('click', that.handleTopBackButton);
 
-            that.handleTopBackButton = function (event) {
-                event.preventDefault();
-                fillCoins.call(that);
-            };
-            that.topBackButton.addEventListener('click', that.handleTopBackButton);
-        } else if (options.modal || options.onBackClick) {
-            that.topBackButton.removeAttribute('style');
-            that.topBackButton.removeEventListener('click', that.handleTopBackButton);
+                that.handleTopBackButton = function (event) {
+                    event.preventDefault();
+                    fillCoins.call(that);
+                };
+                that.topBackButton.addEventListener('click', that.handleTopBackButton);
+            } else if (options.modal || options.onBackClick) {
+                that.topBackButton.removeAttribute('style');
+                that.topBackButton.removeEventListener('click', that.handleTopBackButton);
 
-            that.handleTopBackButton = function (event) {
-                event.preventDefault();
-                paybearBack.call(that);
-            };
-            that.topBackButton.addEventListener('click', that.handleTopBackButton);
+                that.handleTopBackButton = function (event) {
+                    event.preventDefault();
+                    paybearBack.call(that);
+                };
+                that.topBackButton.addEventListener('click', that.handleTopBackButton);
+            }
         }
-
 
         that.coinsBlock.style.display = 'none';
         that.paymentBlock.removeAttribute('style');
@@ -368,7 +370,7 @@
         var code = selectedCoin.code;
         that.paymentHeader.classList.remove('P-Payment__header--red');
         that.paymentHeaderTitle.textContent = 'Waiting on Payment';
-        that.paymentHeaderHelper.innerHTML = 'Rate Locked 1 ' + code + ' : ' + options.fiatSign + (rate).toFixed(2) + ' ' + options.fiatCurrency;
+        that.paymentHeaderHelper.innerHTML = 'Rate Locked 1 ' + code + ' : ' + options.fiatSign + formatMoney(rate, 2) + ' ' + options.fiatCurrency;
         that.paymentHeaderHelper.removeAttribute('style');
 
         // timer
@@ -382,7 +384,7 @@
                     that.paymentHeaderHelper.textContent = 'Rate Expired';
                     that.paymentHeaderHelper.removeAttribute('style');
 
-                    paybearPaymentExpired.call(that);
+                    paymentExpired.call(that);
 
                 } else if (timer < 60) {
                     that.paymentHeader.classList.add('P-Payment__header--red');
@@ -409,13 +411,23 @@
 
         // coin value
         var value = document.querySelector('.P-Payment__value__coins');
-        value.textContent = selectedCoin.coinsValue + ' ' + selectedCoin.code;
+        var coinsPaid = selectedCoin.coinsPaid ? selectedCoin.coinsPaid : 0;
+        var coinsToPay = (selectedCoin.coinsValue - coinsPaid).toFixed(8);
+        if ((+coinsToPay).toString().length < 6) document.querySelector('.P-Payment__value').classList.add('P-Payment__value--flex');
+        value.textContent = +coinsToPay + ' ' + selectedCoin.code;
+
+        // fiat value
+        if (options.enableFiatTotal && options.fiatValue) {
+            document.querySelector('.P-Payment__value__price').removeAttribute('style');
+            var fiatValue = coinsPaid > 0 ? Math.round(selectedCoin.rate * coinsToPay * 100) / 100 : options.fiatValue;
+            document.querySelector('.P-Payment__value__price').innerHTML = options.fiatSign + '<span>' + (fiatValue).toFixed(2) + '</span>&nbsp;' + options.fiatCurrency;
+        }
 
 
         // qr code
         var qr = document.querySelector('.P-Payment__qr img');
         if (selectedCoin.walletLink) {
-            selectedCoin.walletLink = selectedCoin.walletLink.replace(/%s(.+?)%s/, selectedCoin.address + '$1' + selectedCoin.coinsValue);
+            selectedCoin.walletLink = selectedCoin.walletLink.replace(/%s(.+?)%s/, selectedCoin.address + '$1' + coinsToPay);
             qr.setAttribute('src', 'https://chart.googleapis.com/chart?chs=180x180&cht=qr&chl=' + encodeURIComponent(selectedCoin.walletLink));
         } else {
             qr.setAttribute('src', 'https://chart.googleapis.com/chart?chs=180x180&cht=qr&chl=' + encodeURIComponent(selectedCoin.address));
@@ -436,7 +448,7 @@
                 web3.eth.sendTransaction({
                     from: web3.eth.accounts[0],
                     to: selectedCoin.address,
-                    value: web3.toWei(+selectedCoin.coinsValue)
+                    value: web3.toWei(+coinsToPay)
                 }, function(err, data) {
                     btn.removeAttribute('disabled');
                     btn.querySelector('.P-btn-block__text').textContent = metamaskBtnText;
@@ -445,7 +457,7 @@
                     } else {
                         console.log(data);
                         //success
-                        paybearPaymentConfirming.call(that, 0);
+                        paymentConfirming.call(that, 0);
                     }
                 });
             });
@@ -458,7 +470,7 @@
             walletBtn.style.display = 'none';
         }
 
-        paybearResizeFont(selectedCoin.address);
+        resizeFont(selectedCoin.address);
         window.addEventListener('resize', this.resizeListener, true);
 
         // copy address btn
@@ -468,17 +480,17 @@
         copyAddress.addEventListener('click', function () {
             copyAddress.classList.remove('P-btn-block--copied');
             copy.classList.remove('P-btn-block--copied');
-            paybearCopyToClipboard(selectedCoin.address);
+            copyToClipboard(selectedCoin.address);
             copyAddress.classList.add('P-btn-block--copied');
         });
 
         // copy value btn
         var copy = document.querySelector('.P-Payment__value__copy');
-        copy.querySelector('.P-btn-block__helper').innerHTML = selectedCoin.coinsValue;
+        copy.querySelector('.P-btn-block__helper').innerHTML = +coinsToPay + '&nbsp;' + selectedCoin.code;
         copy.addEventListener('click', function () {
             copyAddress.classList.remove('P-btn-block--copied');
             copy.classList.remove('P-btn-block--copied');
-            paybearCopyToClipboard(selectedCoin.coinsValue);
+            copyToClipboard(coinsToPay);
             copy.classList.add('P-btn-block--copied');
         });
 
@@ -493,20 +505,43 @@
                 xhr.onload = function () {
                     if (xhr.status === 200) {
                         var response = JSON.parse(xhr.responseText);
-                        if ((typeof response.confirmations === 'number' || typeof response.confirmations === 'string') && !Number.isNaN(+response.confirmations)) {
-                            paybearPaymentConfirming.call(that, response.confirmations);
-                        }
-
-                        if (response.statusUrl) {
-                            var parser = document.createElement('a');
-                            parser.href = options.statusUrl;
-                            clearInterval(state.checkStatusInterval);
-                            checkStatusXHR(parser.protocol + '//' + parser.host + response.statusUrl);
-                        }
+                        var checkConfirmations  = false;
 
                         if (response.success) {
-                            clearInterval(state.checkStatusInterval);
-                            paybearPaymentConfirmed.call(that, response.redirect_url);
+                            var overPaid = false;
+                            var minOverpaymentCrypto = +(options.minOverpaymentFiat / selectedCoin.rate).toFixed(8);
+                            if (response.coinsPaid > selectedCoin.coinsValue + minOverpaymentCrypto) {
+                                overPaid = +(response.coinsPaid - selectedCoin.coinsValue).toFixed(8);
+                            }
+                            paymentConfirmed.call(that, response.redirect_url, overPaid);
+                        } else {
+                            if (response.coinsPaid !== null) {
+                                if (response.coinsPaid > coinsPaid) {
+                                    var maxUnderpaymentCrypto = +(options.maxUnderpaymentFiat / selectedCoin.rate).toFixed(8);
+                                    var diff = +(selectedCoin.coinsValue - coinsPaid - response.coinsPaid).toFixed(8);
+                                    selectedCoin.coinsPaid = response.coinsPaid;
+
+                                    if (response.coinsPaid < selectedCoin.coinsValue - maxUnderpaymentCrypto) {
+                                        paymentUnpaid.call(that, diff);
+                                    } else {
+                                        checkConfirmations = true;
+                                    }
+                                }
+                            } else {
+                                checkConfirmations = true;
+                            }
+                            if (checkConfirmations) {
+                                if ((typeof response.confirmations === 'number' || typeof response.confirmations === 'string') && !Number.isNaN(+response.confirmations)) {
+                                    paymentConfirming.call(that, response.confirmations);
+                                }
+
+                                if (response.statusUrl) {
+                                    var parser = document.createElement('a');
+                                    parser.href = options.statusUrl;
+                                    clearInterval(state.checkStatusInterval);
+                                    checkStatusXHR(parser.protocol + '//' + parser.host + response.statusUrl);
+                                }
+                            }
                         }
                     }
                 };
@@ -517,15 +552,47 @@
         }
     }
 
-    function paybearPaymentExpired() {
+    function paymentUnpaid(diff) {
+        var that = this;
+        var state = that.state;
+        var options = that.options;
+        var selectedCoin = state.currencies[state.selected];
+        var unpaidScreen = document.querySelector('.P-Payment__unpaid');
+        var paymentStartScreen = document.querySelector('.P-Payment__start');
+        clearInterval(state.interval);
+        clearInterval(state.checkStatusInterval);
+        paymentStartScreen.style.display = 'none';
+        that.paymentHeader.style.display = 'none';
+        that.topBackButton.style.display = 'none';
+        unpaidScreen.removeAttribute('style');
+
+        var unpaidScreenBtn = unpaidScreen.querySelector('button');
+        unpaidScreenBtn.innerHTML =
+            'Pay ' + diff + ' ' +
+            selectedCoin.code + ' (' + options.fiatSign +
+            (Math.round(selectedCoin.rate * diff * 100) / 100).toFixed(2) +
+            '&nbsp;' + options.fiatCurrency + ')';
+
+        unpaidScreenBtn.addEventListener('click', function toStartScreen() {
+            unpaidScreen.style.display = 'none';
+            that.paymentHeader.removeAttribute('style');
+            paymentStart.call(that, true);
+            unpaidScreenBtn.removeEventListener('click', toStartScreen);
+        });
+    }
+
+    function paymentExpired() {
         var that = this;
         var options = that.options;
         var state = that.state;
         clearInterval(state.interval);
         clearInterval(state.checkStatusInterval);
         var paymentExpired = document.querySelector('.P-Payment__expired');
-        var paymentStart = document.querySelector('.P-Payment__start');
-        paymentStart.style.display = 'none';
+        var paymentStartScreen = document.querySelector('.P-Payment__start');
+        var unpaidScreen = document.querySelector('.P-Payment__unpaid');
+        paymentStartScreen.style.display = 'none';
+        unpaidScreen.style.display = 'none';
+        that.paymentHeader.removeAttribute('style');
         paymentExpired.removeAttribute('style');
 
         // helper
@@ -544,19 +611,19 @@
         paymentExpired.querySelector('.P-btn').addEventListener('click', function retry(e) {
             e.preventDefault();
 
-            paymentStart.removeAttribute('style');
+            paymentStartScreen.removeAttribute('style');
             paymentExpired.style.display = 'none';
             options.timer = that.defaultTimer;
             if (state.currencies[state.selected].currencyUrl) {
                 currencyUrlXHR.call(that);
             } else {
-                paybearPaymentStart.call(that);
+                paymentStart.call(that);
             }
             this.removeEventListener('click', retry);
         });
     }
 
-    function paybearPaymentConfirming(confirmations) {
+    function paymentConfirming(confirmations) {
         var that = this;
         var options = that.options;
         var state = that.state;
@@ -590,9 +657,9 @@
                 that.paymentHeaderTimer.textContent = formatTimer(timer);
             }, 1000);
 
-            var paymentStart = document.querySelector('.P-Payment__start');
+            var paymentStartScreen = document.querySelector('.P-Payment__start');
             var paymentConfirming = document.querySelector('.P-Payment__confirming');
-            paymentStart.style.display = 'none';
+            paymentStartScreen.style.display = 'none';
             paymentConfirming.removeAttribute('style');
 
             // helper
@@ -640,7 +707,7 @@
         this.state.isConfirming = true;
     }
 
-    function paybearPaymentConfirmed(redirect) {
+    function paymentConfirmed(redirect, overPaid) {
         var that = this;
         var state = that.state;
         var options = that.options;
@@ -648,18 +715,15 @@
         clearInterval(state.interval);
         clearInterval(state.checkStatusInterval);
 
+        var paymentStartScreen = document.querySelector('.P-Payment__start');
         var paymentConfirming = document.querySelector('.P-Payment__confirming');
         var paymentConfirmed = document.querySelector('.P-Payment__confirmed');
+        paymentStartScreen.style.display = 'none';
         paymentConfirming.style.display = 'none';
         paymentConfirmed.removeAttribute('style');
 
         //header
-        var coinConfirmations = +selectedCoin.maxConfirmations;
-        that.paymentHeader.classList.remove('P-Payment__header--red');
-        that.paymentHeader.classList.add('P-Payment__header--green');
-        that.paymentHeaderTitle.textContent = 'Payment Confimed';
-        that.paymentHeaderHelper.textContent = coinConfirmations + (coinConfirmations === 1 ? ' Confirmation' : ' Confirmations') + ' found';
-        that.paymentHeaderTimer.style.display = 'none';
+        that.paymentHeader.style.display = 'none';
         document.querySelector('.P-Payment__header__check').style.display = 'block';
 
         if (options.redirectTo && options.redirectTimeout) {
@@ -702,17 +766,32 @@
             }
         }
 
-        if ((options.redirectTo && options.redirectTimeout) || redirect) {
-            if (options.redirectTo) {
-                redirect = options.redirectTo;
-            }
+        if (overPaid) {
+            document.querySelector('.P-Payment__header__check').classList.add('P-Payment__header__check--yellow');
+            var overPaidImg = 'data:image/svg+xml;base64,PHN2ZyBoZWlnaHQ9IjI2MCIgdmlld0JveD0iMCAwIDI2MyAyNjAiIHdpZHRoPSIyNjMiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGcgZmlsbD0ibm9uZSI+PGVsbGlwc2UgY3g9IjEzMC4xOTgwMSIgY3k9IjEzMCIgZmlsbD0iI2VlY2Y3ZiIgcng9IjEzMC4xOTgwMSIgcnk9IjEzMCIvPjxwYXRoIGQ9Im0yNTQuMDAzMzIgODkuNzU3MmMtMy42ODcyMS0xMS4zMTc4LTguODc0My0yMS45NTE4LTE1LjM0NTE0LTMxLjY2OGwtMTEzLjk2NzU0IDExOC41MjM2LjIyOTE1IDEzLjE4OTggNS4zNzk3OC0uMDMzOHoiIGZpbGw9IiNjNGE3NWUiLz48cGF0aCBkPSJtMjYwLjU5Mzk0MSA1MS4xNzMyLTIzLjIxNjkxMS0yMi45MDM0Yy0zLjE2OTAyLTMuMTI3OC04LjMwOTIzOC0zLjEyNzgtMTEuNDc4MjU4IDBsLTk5LjI0NDc0MiAxMDIuMDcwOC00Mi43OTg2OTM0LTQyLjIyNGMtMy4xNzQyMjc3LTMuMTI3OC04LjMwOTIzNzYtMy4xMjc4LTExLjQ4MDg2MTQgMGwtMjAuNTc5MDk5IDIwLjMwMzRjLTMuMTY5MDE5OCAzLjEyNTItMy4xNjkwMTk4IDguMTk1MiAwIDExLjMyMDRsNjguNjg5ODcxOCA2Ny43NTg2YzEuODMwNTg0IDEuODA3IDQuMzEyMTU4IDIuNTM1IDYuNjk3Mzg2IDIuMjU0MiAyLjM4NTIyNy4yNzgyIDQuODY2ODAyLS40NDcyIDYuNjk3Mzg2LTIuMjU0MmwxMjYuNzEzOTIxLTEyNS4wMDI4YzMuMTY5MDE5LTMuMTI3OCAzLjE2OTAxOS04LjE5NTIgMC0xMS4zMjN6IiBmaWxsPSIjZjhmOGY4Ii8+PHBhdGggZD0ibTEzMy44ODAwMiAxODcuNDk5IDEyNi43MTM5MjEtMTI1LjAwMjhjMy4xNjkwMTktMy4xMjc4IDMuMTY5MDE5LTguMTk1MiAwLTExLjMyM2wtMy43ODg3NjMtMy43Mzg4LTEzMC4zNDY0NDUgMTI4LjAxMS03MS43ODU5ODA1LTY5Ljg2NzItMi44NzQ3NzIzIDIuODM5MmMtMy4xNjkwMTk4IDMuMTI1Mi0zLjE2OTAxOTggOC4xOTUyIDAgMTEuMzIwNGw2OC42ODcyNjc4IDY3Ljc2MTJjMS44MzA1ODQgMS44MDcgNC4zMTIxNTggMi41MzUgNi42OTczODYgMi4yNTQyIDIuMzg1MjI3LjI4MDggNC44NjY4MDItLjQ0NDYgNi42OTczODYtMi4yNTQyeiIgZmlsbD0iI2ViZWJlYiIvPjwvZz48L3N2Zz4=';
+            document.querySelector('.P-Payment__confirmed__title').classList.add('P-Payment__confirmed__title--overpaid');
+            paymentConfirmed.querySelector('.P-Content__icon img').setAttribute('src', overPaidImg);
+            paymentConfirmed.querySelector('.P-btn').className = 'P-btn';
+            paymentConfirmed.querySelector('.P-btn').innerHTML = 'Ok';
+            paymentConfirmed.querySelector('h2').innerHTML =
+                '<div><b>Whoops, you overpaid: ' + overPaid + '&nbsp;' + selectedCoin.code + '</b></div>';
+            var confirmedP = paymentConfirmed.querySelector('p');
+            confirmedP.innerHTML = 'To get your overpayment refunded, please contact the merchant directly and share your Order ID and ' + selectedCoin.code + ' address to send your refund to.';
+            confirmedP.removeAttribute('style');
 
-            setTimeout(function () {
-                window.location.href = redirect;
-                if (redirect.indexOf(window.location.href) > -1) {
-                    window.location.reload();
+        } else {
+            if ((options.redirectTo && options.redirectTimeout) || redirect) {
+                if (options.redirectTo) {
+                    redirect = options.redirectTo;
                 }
-            }, options.redirectTimeout * 1000);
+
+                setTimeout(function () {
+                    window.location.href = redirect;
+                    if (redirect.indexOf(window.location.href) > -1) {
+                        window.location.reload();
+                    }
+                }, options.redirectTimeout * 1000);
+            }
         }
 
     }
@@ -735,7 +814,7 @@
         return minutes + ':' + seconds;
     }
 
-    function paybearCopyToClipboard(text) {
+    function copyToClipboard(text) {
         if (window.clipboardData && window.clipboardData.setData) {
             // IE specific code path to prevent textarea being shown while dialog is visible.
             return clipboardData.setData('Text', text);
@@ -883,7 +962,17 @@
         return selectedText;
     }
 
-    function paybearResizeFont(address) {
+    function formatMoney(n, c, d, t) {
+        var c = isNaN(c = Math.abs(c)) ? 2 : c,
+            d = d == undefined ? "." : d,
+            t = t == undefined ? "," : t,
+            s = n < 0 ? "-" : "",
+            i = String(parseInt(n = Math.abs(Number(n) || 0).toFixed(c))),
+            j = (j = i.length) > 3 ? j % 3 : 0;
+        return s + (j ? i.substr(0, j) + t : "") + i.substr(j).replace(/(\d{3})(?=\d)/g, "$1" + t) + (c ? d + Math.abs(n - i).toFixed(c).slice(2) : "");
+    }
+
+    function resizeFont(address) {
         var addressContainerWidth = document.querySelector('.P-Payment__address').clientWidth;
         var addressCode = document.querySelector('.P-Payment__address code');
         // detecting computed letter width + offset
@@ -984,7 +1073,7 @@
                 handleCurrenciesSuccess.call(that);
                 var response = JSON.parse(xhr.responseText);
                 Object.assign(state.currencies[state.selected], response);
-                paybearPaymentStart.call(that);
+                paymentStart.call(that);
             }
         };
         xhr.open('GET', state.currencies[state.selected].currencyUrl, true);

@@ -2,10 +2,10 @@
 if ( ! defined( 'ABSPATH' ) ) exit; // Exit if accessed directly
 
 /**
- * Plugin Name: Crypto Payment Gateway for WooCommerce by PayBear.io
+ * Plugin Name: Crypto Payments for WooCommerce by PayBear.io
  * Plugin URI: https://www.paybear.io/
  * Description: Allows to accept crypto payments such as Bitcoin (BTC) and Ethereum (ETH)
- * Version: 0.9
+ * Version: 1.0
  */
 
 add_action( 'plugins_loaded', 'paybear_gateway_load', 0 );
@@ -29,11 +29,11 @@ function paybear_gateway_load() {
     }
 
     /**
-     * Crypto Payment Gateway for WooCommerce by PayBear.io
+     * Crypto Payments for WooCommerce by PayBear.io
      *
      * @class 		WC_Gateway_Paybear
      * @extends		WC_Gateway_Paybear
-     * @version		0.9
+     * @version		1.0
      * @package		WooCommerce/Classes/Payment
      */
 class WC_Gateway_Paybear extends WC_Payment_Gateway {
@@ -60,6 +60,36 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 			self::$instance = new self();
 		}
 		return self::$instance;
+	}
+
+	/**
+	 * @param $order_id
+	 * @param $token
+	 *
+	 * @return array|mixed|object
+	 */
+	public function get_unconfirmed_payments( $order_id, $token ) {
+		$paymentsUnconfirmed = json_decode( get_post_meta( $order_id, $token . ' unconfirmed balance', true ), true );
+		if ( ! $paymentsUnconfirmed ) {
+			$paymentsUnconfirmed = array();
+		}
+
+		return $paymentsUnconfirmed;
+	}
+
+	/**
+	 * @param $order_id
+	 * @param $token
+	 *
+	 * @return array|mixed|object
+	 */
+	public function get_confirmed_payments( $order_id, $token ) {
+		$paymentsConfirmed = json_decode( get_post_meta( $order_id, $token . ' confirmed balance', true ), true );
+		if ( ! $paymentsConfirmed ) {
+			$paymentsConfirmed = array();
+		}
+
+		return $paymentsConfirmed;
 	}
 
 	/**
@@ -127,6 +157,12 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 		//Disable PayBear if all Cryptocurrencies are disabled
 		add_filter( 'woocommerce_available_payment_gateways', array($this, 'available_gateways') );
 
+		add_filter('autoptimize_filter_js_exclude', array($this, 'autoptimize_filter'),10,1);
+
+    }
+
+    function autoptimize_filter($exclude) {
+	    return $exclude.", paybear.js";
     }
 
     function is_available()
@@ -139,18 +175,16 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 
 		    $is_available = false;
 		    foreach($this->get_currencies() as $token => $currency) {
-			    if ($this->token_enabled($token)) {
-				    $rate = $this->get_exchange_rate($token);
-				    if ($rate>0) {
-					    $amount = round($cart_total/$rate, 8);
-					    if ($amount >= $currency['minimum']) {
-						    $is_available = true;
-						    break;
-					    }
-				    } else {
-					    self::log('No exchange rate for ' . $token);
-				    }
-			    }
+                $rate = $this->get_exchange_rate($token);
+                if ($rate>0) {
+                    $amount = round($cart_total/$rate, 8);
+                    if ($amount >= $currency['minimum']) {
+                        $is_available = true;
+                        break;
+                    }
+                } else {
+                    self::log('No exchange rate for ' . $token);
+                }
 		    }
 	    }
 
@@ -178,11 +212,6 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 	}
 
 
-
-    function token_enabled($token)
-    {
-	return true;
-    }
 
     function token_minimum($token)
     {
@@ -279,7 +308,7 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 	    self::$currencies = array();
 
 	    $url = $this->api_domain() . sprintf("/v2/currencies?token=%s", $secret);
-	    if ( $response = @file_get_contents( $url ) ) {
+	    if ( $response = wp_remote_fopen( $url ) ) {
 		    $response = json_decode( $response, true);
 		    if ( isset($response) && $response['success'] ) {
 			    self::$currencies = $response['data'];
@@ -330,6 +359,20 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 							'default' => __( 'Bitcoin (BTC), Ethereum (ETH) and other crypto currencies', 'woocommerce' )
 						),
 
+			'min_overpayment' => array(
+                            'title' => sprintf(__( 'Overpayment (%s)', 'woocommerce' ), strtoupper(get_woocommerce_currency())),
+                            'type' => 'text',
+                            'description' => __( 'The client will be notified about their overpayment if it is greater than this amount. You will then need to issue the overpayment refund.', 'woocommerce' ),
+                            'default' => '1'
+                        ),
+
+			'max_underpayment' => array(
+                            'title' => sprintf(__( 'Underpayment (%s)', 'woocommerce' ), strtoupper(get_woocommerce_currency())),
+                            'type' => 'text',
+                            'description' => __( 'The client will be notified and required to pay the balance owed for underpayments greater than this specified amount.', 'woocommerce' ),
+                            'default' => '0.01'
+                        ),
+
 			'debug_email' => array(
 							'title' => __( 'Debug Email', 'woocommerce' ),
 							'type' => 'email',
@@ -376,14 +419,30 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
     function thankyou_page( $order_id ) {
         $order = wc_get_order($order_id);
 	    $status = $order->get_status();
+	    $underpaid = false;
 
 	    if ($status=='on-hold' ) {
 		    echo '<p>' . __( 'Waiting for payment confirmation.', 'woocommerce' ) . '</p>';
 		    echo '<p>' . __( 'Once your payment is confirmed, your order will be processed automatically.', 'woocommerce' ) . '</p>';
+
+		    $underpaid = false;
+		    if ($token = get_post_meta($order_id, 'Token Selected', true)) {
+			    $paymentsUnconfirmed = $this->get_unconfirmed_payments( $order_id, $token);
+			    $totalPaid = array_sum($paymentsUnconfirmed);
+			    $toPay = get_post_meta($order_id, $token . ' total', true);
+			    if ($totalPaid<$toPay) {
+			        $underpaid = true;
+                }
+		    }
+
+
         }
 
 	    if ($status=='pending' || $status=='failed') {
 		    echo '<p>' . __( 'Once your payment is confirmed, your order will be processed automatically.', 'woocommerce' ) . '</p>';
+	    }
+
+	    if ($status=='pending' || $status=='failed' || $underpaid) {
 
 		    $js  = $this->assetDir . 'paybear.js';
 		    $css = $this->assetDir . 'paybear.css';
@@ -432,12 +491,11 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 
 		self::log(print_r($params, true));
 
-		//$token = get_post_meta( $order_id, 'Token Selected', true);
         $token = $params->blockchain;
 		update_post_meta( $order_id, 'Token Selected', $token);
-        $confirmations = $this->get_confirmations($token);
-        if (!is_numeric($confirmations)) $confirmations = 3;
-
+        $maxConfirmations = $params->maxConfirmations;
+        if (!is_numeric($maxConfirmations)) $maxConfirmations = $this->get_confirmations($token);
+		update_post_meta($order_id, $token . ' max_confirmations', $maxConfirmations);
 
 
 		if ($invoice == get_post_meta($order_id, $token . ' invoice', true)) {
@@ -446,68 +504,137 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 			    $order->update_status( 'on-hold', __( 'Awaiting payment confirmation', 'woocommerce' ) );
 		    }
 
-			update_post_meta($order_id, $token . ' confirmations', $params->confirmations);
-			update_post_meta($order_id, $token . ' max_confirmations', $confirmations);
+		    $hash = $params->inTransaction->hash;
+
+			$toPay = get_post_meta($order_id, $token . ' total', true);
+			$maxDifference = $this->get_max_underpayment() / $this->get_exchange_rate($token);
+			$maxDifference = max($maxDifference, 0.00000001); //always allow rounding errors
+			$exp = $params->inTransaction->exp;
+			$amountPaid = $params->inTransaction->amount / pow(10, $exp); //amount in Crypto
 
 
-			$timestamp = get_post_meta($order_id, $token . ' payment timestamp', true);
-			if (!$timestamp) {
+			$confirmations = json_decode(get_post_meta($order_id, $token . ' confirmation', true), true);
+			if (!$confirmations) $confirmations = array();
+			$paymentsUnconfirmed = $this->get_unconfirmed_payments( $order_id, $token );
+
+			if (isset($paymentsUnconfirmed[$hash])) {
+			    $transactionIndex = array_search($hash, array_keys($paymentsUnconfirmed));
+			    if ($transactionIndex>0) usleep($transactionIndex*500); //avoid race conditions
+            }
+
+			$paymentsConfirmed   = $this->get_confirmed_payments( $order_id, $token);
+
+			$isNewPayment = !isset($paymentsUnconfirmed[$hash]);
+			$confirmations[$hash] = $params->confirmations;
+			$paymentsUnconfirmed[$hash] = $amountPaid;
+
+			update_post_meta($order_id, $token . ' confirmation', json_encode($confirmations));
+			update_post_meta($order_id, $token . ' unconfirmed balance', json_encode($paymentsUnconfirmed));
+
+			$orderTimestamp = get_post_meta($order_id, $token . ' order timestamp', true);
+			//$paymentTimestamp = get_post_meta($order_id, $token . ' payment timestamp', true);
+			$deadline = $orderTimestamp + $this->get_option('rate_lock_time', 15 )*60;
+
+
+			//$timestamp = get_post_meta($order_id, $token . ' payment timestamp', true);
+			if ($isNewPayment) {
+				if (time()>$deadline) { //rate changed. recalculate crypto total?
+					self::log( "PayBear IPN: late payment [" . $order_id . "]" );
+					self::log("PayBear IPN: old total [" . $toPay . "]");
+
+					$rate = $this->get_exchange_rate($token);
+					$fiatTotal = $order->get_total();
+					if ( $rate && $fiatTotal>0 ) {
+						$newCryptoTotal = round( $fiatTotal / $rate, 8 );
+						if (true || $newCryptoTotal>$toPay) {
+							$toPay = $newCryptoTotal;
+							$this->update_crypto_total($token, $order_id, $toPay);
+
+							self::log( "PayBear IPN: new total [" . $toPay . "]" );
+						}
+					}
+				}
+
 				update_post_meta($order_id, $token . ' payment timestamp', time());
             }
 
-            if ($params->confirmations >= $confirmations) { //enough confirmations
-                $toPay = get_post_meta($order_id, $token . ' total', true);
-                $exp = $params->inTransaction->exp;
-                $amountPaid = $params->inTransaction->amount / pow(10, $exp); //amount in Crypto
-                $maxDifference = 0.00000001;
+            if ($params->confirmations >= $maxConfirmations) { //enough confirmations for this payment
+	            $paymentsConfirmed[$hash] = $amountPaid;
+	            update_post_meta($order_id, $token . ' confirmed balance', json_encode($paymentsConfirmed));
+
+                $totalPaid = array_sum($paymentsConfirmed);
 
 	            self::log("PayBear IPN: toPay [" . $toPay . "]");
-                self::log("PayBear IPN: paid [" . $amountPaid . "]");
-	            self::log("PayBear IPN: maxDifference [" . $maxDifference . "]");
+	            self::log("PayBear IPN: paid [" . $amountPaid . "]");
+	            self::log("PayBear IPN: total paid [" . $totalPaid . "]");
+	            self::log("PayBear IPN: maxDifference [" . round($maxDifference, 9) . "]");
 
-                if ($toPay>0 && ($toPay-$amountPaid)<$maxDifference) { //allow loss caused by rounding
-	                $orderTimestamp = get_post_meta($order_id, $token . ' order timestamp', true);
-	                $paymentTimestamp = get_post_meta($order_id, $token . ' payment timestamp', true);
-	                $deadline = $orderTimestamp + $this->get_option('rate_lock_time', 15 )*60;
-	                $process = true;
-	                if ($paymentTimestamp>$deadline) {
-		                self::log( "PayBear IPN: late payment [" . $order_id . "]" );
 
-		                //recalculate using current exchange rate: did we lose?
-                        $fiatPaid = $amountPaid * $this->get_exchange_rate($token);
-                        if ($order->get_total()<$fiatPaid) {
-	                        self::log( "PayBear IPN: rate changed [" . $order_id . "]" );
-	                        if ( ! empty( $this->debug_email ) ) {
-		                        mail( $this->debug_email, "PayBear IPN: late payment [" . $order_id . "]", print_r( $params, true ) );
-	                        }
-	                        $process = false;
+                if ($toPay>0 && ($toPay-$totalPaid)<$maxDifference) { //allow loss caused by rounding
+                    self::log( 'Payment complete' );
+                    $order->payment_complete( $params->inTransaction->hash );
 
-	                        $currency = get_woocommerce_currency();
+                    $overpaidCrypto = $totalPaid-$toPay;
+                    $overpaid = round( $overpaidCrypto * $this->get_exchange_rate( $token ), 2 );
+                    $minOverpaymentFiat = $this->get_min_overpayment();
+                    if ($overpaid > $minOverpaymentFiat) { //overpayment
+                        $note      = sprintf(
+                                __( '
 
-	                        $order->update_status('on-hold');
-	                        $note = sprintf(__( 'Late Payment / Rate changed (%s %s paid, %s %s expected)', 'woocommerce' ), $fiatPaid, $currency, $order->get_total(), $currency);
-	                        $order->add_order_note( $note, 1, false );
-                        }
+Whoops, you overpaid %s %s (%s %s)
+
+Don\'t worry, here is what to do next:
+
+To get your overpayment refunded, please contact the merchant directly and share your Order ID %s and %s Address to send your refund to.
+
+
+Tips for Paying with Crypto:
+
+Tip 1) When paying, ensure you send the correct amount in %s.
+Do not manually enter the %s Value.
+
+Tip 2)  If you are sending from an exchange, be sure to correctly factor in their withdrawal fees.
+
+Tip 3) Be sure to successfully send your payment before the countdown timer expires.
+This timer is setup to lock in a fixed rate for your payment. Once it expires, rates may change.', 'woocommerce' ),
+                                $overpaidCrypto, strtoupper( $token ), get_woocommerce_currency_symbol(), $overpaid, $order_id, strtoupper( $token ), strtoupper( $token ), get_woocommerce_currency() );
+                        $order->add_order_note( $note, 1, false );
                     }
-
-                    if ($process) {
-	                    self::log( 'Payment complete' );
-	                    $order->payment_complete( $params->inTransaction->hash );
-                    }
-                } else {
-	                self::log("PayBear IPN: wrong amount [" . $order_id . "]");
-                    if (!empty($this->debug_email)) { mail($this->debug_email, "PayBear IPN: wrong amount [" . $order_id . "]", print_r($params, true)); }
+                } else { //underpayment
+	                self::log("PayBear IPN: underpayment [" . $order_id . "]");
+                    //if (!empty($this->debug_email)) { mail($this->debug_email, "PayBear IPN: wrong amount [" . $order_id . "]", print_r($params, true)); }
 
 	                $order->update_status('on-hold' );
-	                $underpaid = round(($toPay-$amountPaid)*$this->get_exchange_rate($token), 2);
-	                $note = sprintf(__( 'Wrong Amount Paid (%s %s received, %s %s expected) - %s %s underpaid', 'woocommerce' ), $amountPaid, strtoupper($token), $toPay, strtoupper($token), get_woocommerce_currency_symbol(), $underpaid);
+	                $underpaidCrypto = $toPay - $totalPaid;
+	                $underpaid       = round( $underpaidCrypto * $this->get_exchange_rate($token), 2);
+	                $note            = sprintf(__( 'Looks like you underpaid %s %s (%s %s)
+ 
+Don\'t worry, here is what to do next:
+ 
+Contact the merchant directly and…
+-Request details on how you can pay the difference.
+-Request a refund and create a new order.
+ 
+ 
+Tips for Paying with Crypto:
+ 
+Tip 1) When paying, ensure you send the correct amount in %s.
+Do not manually enter the %s Value.
+ 
+Tip 2)  If you are sending from an exchange, be sure to correctly factor in their withdrawal fees.
+ 
+Tip 3) Be sure to successfully send your payment before the countdown timer expires.
+This timer is setup to lock in a fixed rate for your payment. Once it expires, rates may change.', 'woocommerce'),
+                    $underpaidCrypto, strtoupper($token), get_woocommerce_currency_symbol(), $underpaid, strtoupper($token), strtoupper( $token ), get_woocommerce_currency());
 	                $order->add_order_note( $note, 1, false );
+
+	                update_post_meta($order_id, $token . ' order timestamp', time()); //extend payment window
                 }
 
                 wp_send_json($invoice); //stop processing callbacks
             }
 
-            self::log(sprintf('Callback processed: %s/%s', $params->confirmations, $confirmations));
+            self::log(sprintf('Callback processed: %s/%s', $params->confirmations, $maxConfirmations));
 		} else {
 			self::log("PayBear IPN: wrong invoice [" . $order_id . ' / ' . get_post_meta($order_id, $token . ' invoice', true) . "]");
 			if (!empty($this->debug_email)) { mail($this->debug_email, "PayBear IPN: wrong invoice [" . $invoice . "]", print_r($params, true)); }
@@ -560,6 +687,15 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 	    $value = $order->get_total();
 
 	    $currencies = $this->get_currency_json($order_id);
+
+	    if ($token = get_post_meta($order_id, 'Token Selected', true)) {
+		    $paymentsUnconfirmed = $this->get_unconfirmed_payments( $order_id, $token);
+		    $totalPaid = array_sum($paymentsUnconfirmed);
+		    if ($totalPaid>0) {
+		        $currencies = array($this->get_currency_json($order_id, $token));
+		    }
+	    }
+
 	    $response = array(
             //'button' => '#paybear-all',
             'modal' => false,
@@ -568,7 +704,9 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
             'fiatValue' => doubleval($value),
             'fiatCurrency' => strtoupper(get_woocommerce_currency()),
             'fiatSign' => get_woocommerce_currency_symbol(),
-            'enableFiatTotal' => false,
+		    'maxUnderpaymentFiat' => 1,
+            'minOverpaymentFiat' => 10,
+            'enableFiatTotal' => true,
             'enablePoweredBy' => false,
             'statusUrl' => $this->get_status_link($order_id),
             'redirectTo' => $this->get_return_url( $order ),
@@ -589,29 +727,31 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 		$currencies = array();
 
 		foreach ($this->get_currencies() as $code => $currency) {
-			if ( $this->token_enabled($code) ) {
-				$rate = $this->get_exchange_rate($code);
-				if ( $rate ) {
-					$amount = round( $value / $rate, 8 );
-					if ( $amount >= $currency['minimum'] ) {
-						if ($token=='all') {
-							$currency['currencyUrl'] = $this->get_address_link( $order_id, $code );
-							$currency['coinsValue']  = $amount;
-							$currency['rate'] = round( $rate, 2 );
+            $rate = $this->get_exchange_rate($code);
+            if ( $rate ) {
+                $amount = round( $value / $rate, 8 );
+                if ( $amount >= $currency['minimum'] ) {
+                    if ($token=='all') {
+                        $currency['currencyUrl'] = $this->get_address_link( $order_id, $code );
+                        $currency['coinsValue']  = $amount;
+                        $currency['rate'] = round( $rate, 2 );
 
-							$currencies[] = $currency;
-						} elseif ( $token == $code ) {
-							$address      = $this->get_address( $code, $order_id, $amount );
-							$currency['coinsValue'] = $amount;
-							$currency['rate'] = round( $rate, 2 );
-							$currency['maxConfirmations'] = $this->get_confirmations( $code );
-							$currency['address'] = $address;
+                        $currencies[] = $currency;
+                    } elseif ( $token == $code ) {
+                        $paymentsUnconfirmed = $this->get_unconfirmed_payments( $order_id, $token);
+                        $unconfirmedTotal = array_sum($paymentsUnconfirmed);
 
-							$currencies[] = $currency;
-						}
-					}
-				}
-			}
+                        $address      = $this->get_address( $code, $order_id, $amount );
+                        $currency['coinsValue'] = $amount;
+                        $currency['coinsPaid'] = $unconfirmedTotal;
+                        $currency['rate'] = round( $rate, 2 );
+                        $currency['maxConfirmations'] = $this->get_confirmations( $code );
+                        $currency['address'] = $address;
+
+                        $currencies[] = $currency;
+                    }
+                }
+            }
 		}
 
 
@@ -636,15 +776,28 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 	    if ($order && ($status=='on-hold' || $status=='processing' || $status=='failed')) {
 
 		    $token = get_post_meta( $order_id, 'Token Selected', true);
-		    //$response['success'] = false;
-		    //$response['confirmations'] = 0;
 		    if ($token) {
-			    $confirmations = get_post_meta( $order_id, $token . ' confirmations', true);
+			    $toPay = get_post_meta($order_id, $token . ' total', true);
+
+			    $maxDifference = $this->get_max_underpayment() / $this->get_exchange_rate($token);
+			    $maxDifference = max($maxDifference, 0.00000001); //always allow rounding errors
+
 			    $maxConfirmations = get_post_meta( $order_id, $token . ' max_confirmations', true);
 
-			    $response['success'] = $confirmations >= $maxConfirmations;
+			    $confirmations = json_decode(get_post_meta($order_id, $token . ' confirmation', true), true);
+			    if (!$confirmations) $confirmations = array();
+			    $paymentsUnconfirmed = $this->get_unconfirmed_payments( $order_id, $token);
+			    $paymentsConfirmed   = $this->get_confirmed_payments( $order_id, $token);
 
-			    if (is_numeric($confirmations)) $response['confirmations'] = $confirmations;
+			    $totalConfirmations = min($confirmations);
+			    $totalUnconfirmed = array_sum($paymentsUnconfirmed);
+			    $totalConfirmed = array_sum($paymentsConfirmed);
+
+			    $response['success'] = ($totalConfirmations >= $maxConfirmations) && ($totalConfirmed>($toPay-$maxDifference));
+
+			    $response['coinsPaid'] = $totalUnconfirmed;
+
+			    if (!empty($paymentsUnconfirmed)) $response['confirmations'] = $totalConfirmations;
 		    }
 	    }
 
@@ -670,28 +823,52 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
             $currency = strtolower(get_woocommerce_currency());
 	        $url = $this->api_domain() . sprintf("/v2/exchange/%s/rate", $currency);
 
-
-	        if ( $response = @file_get_contents( $url ) ) {
-		        $response = json_decode( $response );
-		        if ( $response->success ) {
-			        $cache = $response->data;
-		        }
-	        }
+            if ( $response = wp_remote_fopen( $url ) ) {
+                $response = json_decode( $response );
+                if ( $response->success ) {
+                    $cache = $response->data;
+                }
+            } else {
+                $error = error_get_last();
+	            self::log("Cannot get rates: " . print_r($error, true));
+            }
         }
 
         return isset($cache->$token->mid) ? $cache->$token->mid : null;
     }
 
-    public function get_address( $token, $order_id, $total ) {
+    public function update_crypto_total($token, $order_id, $total)
+    {
 	    $token = $this->sanitize_token($token);
 
-	    if (!$this->token_enabled($token)) return false;
+	    /*
+	    if ($total===false) {
+	        $rate = $this->get_exchange_rate($token);
+		    $order = wc_get_order($order_id);
+		    $value = $order->get_total();
+            if ( $rate && $value>0 ) {
+	            $total = round( $value / $rate, 8 );
+            }
+        }
+	    */
+
+        if ($total>0) {
+	        update_post_meta( $order_id, $token . ' total', $total );
+	        update_post_meta( $order_id, $token . ' order timestamp', time() );
+        }
+
+        return $total;
+
+    }
+
+    public function get_address( $token, $order_id, $total )
+    {
+	    $token = $this->sanitize_token($token);
 
 	    //return '0xTESTJKADHFJKDHFJKSDFSDF';
 
 	    if ($address = get_post_meta($order_id, $token . ' address', true)) {
-		    update_post_meta($order_id, $token . ' total', $total);
-		    update_post_meta($order_id, $token . ' order timestamp', time());
+	        $this->update_crypto_total($token, $order_id, $total);
 		    return $address;
 	    }
 
@@ -702,7 +879,7 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 
 	    $url = sprintf($this->api_domain() . '/v2/%s/payment/%s?token=%s', $token, urlencode($callbackUrl), $secret);
 	    self::log("PayBear address request: " . $url);
-        if ($contents = @file_get_contents($url)) {
+        if ($contents = wp_remote_fopen($url)) {
             $response = json_decode($contents);
 	        self::log("PayBear address response: " . print_r($response, true));
             if (isset($response->data->address)) {
@@ -710,8 +887,8 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 
 	            update_post_meta($order_id, $token . ' address', $address);
                 update_post_meta($order_id, $token . ' invoice', $response->data->invoice);
-	            update_post_meta($order_id, $token . ' total', $total);
-	            update_post_meta($order_id, $token . ' order timestamp', time());
+
+                $this->update_crypto_total($token, $order_id, $total);
 
                 return $address;
             } else {
@@ -725,6 +902,13 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 	    $token = preg_replace('/[^a-z]/', '', $token);
 	    return $token;
     }
+
+	private function get_min_overpayment() {
+		return doubleval($this->get_option( 'min_overpayment', 1 ));
+	}
+	private function get_max_underpayment() {
+		return doubleval($this->get_option( 'max_underpayment', 0.01 ));
+	}
 
 }
 
