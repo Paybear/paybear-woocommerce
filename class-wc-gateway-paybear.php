@@ -5,10 +5,245 @@ if ( ! defined( 'ABSPATH' ) ) exit; // Exit if accessed directly
  * Plugin Name: Crypto Payments for WooCommerce by PayBear.io
  * Plugin URI: https://www.paybear.io/
  * Description: Allows to accept crypto payments such as Bitcoin (BTC) and Ethereum (ETH)
- * Version: 1.0
+ * Version: 1.1
  */
 
 add_action( 'plugins_loaded', 'paybear_gateway_load', 0 );
+add_action( 'init', 'paybear_shortcodes_init' );
+add_action( 'init', 'create_paybear_post_type' );
+
+add_filter('template_include', 'paybear_payment_page_template');
+
+function paybear_payment_page_template( $page_template )
+{
+    if ( get_post_type() && get_post_type() == 'paybear_payment' ) {
+        $dir = pathinfo($page_template, PATHINFO_DIRNAME);
+        $page_template = $dir . DIRECTORY_SEPARATOR . 'page.php';
+    }
+
+    return $page_template;
+}
+
+function paybear_shortcodes_init()
+{
+    add_shortcode('paybear_payment_widget', 'paybear_payment_widget_shortcode');
+}
+function create_paybear_post_type() {
+    register_post_type( 'paybear_payment',
+        array(
+            'labels' => array(
+                'name' => __( 'Paybear Payment' ),
+                'singular_name' => __( 'Paybear Payment' )
+            ),
+            'public' => true,
+            'has_archive' => false,
+            // 'capability_type' => 'product',
+            'publicly_queryable' => true,
+            'exclude_from_search' => true,
+            'show_in_menu' => false,
+            'show_in_nav_menus' => false,
+            'show_in_admin_bar' => false,
+            'show_in_rest' => false,
+            'hierarchical' => false,
+            'supports' => array( 'title' ),
+            // 'rewrite' => array('slug' => 'checkout')
+        )
+    );
+    flush_rewrite_rules();
+}
+
+function paybear_payment_widget_shortcode($atts = [], $content = null, $tag = '')
+{
+    wp_enqueue_style('paybear-css', plugin_dir_url(__FILE__) . 'assets/form/paybear.css');
+    wp_enqueue_script('paybear-js', plugin_dir_url(__FILE__) . 'assets/form/paybear.js', array('jquery'));
+    wp_enqueue_script('paybear-widget-js', plugin_dir_url(__FILE__) . 'assets/form/widget.js', array('paybear-js'));
+
+    $order_id = null;
+    $order = null;
+    if (isset($_GET['order_id'])) {
+        $order_id = (int) $_GET['order_id'];
+        $order = wc_get_order($order_id);
+    }
+
+    if (!$order_id || !$order) {
+        return '';
+    }
+
+    if (!isset($_GET['key']) || $_GET['key'] != $order->get_order_key()) {
+        return '';
+    }
+
+    $gateway = WC_Gateway_Paybear::get_instance();
+    $to_pay = 0;
+    $total_paid = 0;
+    $total_paid_fiat = 0;
+    $fiat_currency = strtoupper(get_woocommerce_currency());
+    $fiat_sign = get_woocommerce_currency_symbol();
+    $min_overpayment_fiat = $gateway->get_option('min_overpayment');
+    $max_underpayment_fiat = $gateway->get_option('max_underpayment');
+    $max_underpayment = 0;
+    $min_overpayment = 0;
+    $overpaid = false;
+
+    $currencies = $gateway->get_currency_json($order_id);
+    if ($token = get_post_meta($order_id, 'Token Selected', true)) {
+        $payments_unconfirmed = $gateway->get_unconfirmed_payments( $order_id, $token);
+        $rate = round($order->get_total() / get_post_meta($order_id, $token . ' total', true), 8);
+        $orderTimestamp = get_post_meta($order_id, $token . ' order timestamp', true);
+        //$paymentTimestamp = get_post_meta($order_id, $token . ' payment timestamp', true);
+        $deadline = $orderTimestamp + $gateway->get_option('rate_lock_time', 15 )*60;
+        if (time()>$deadline) {
+            $rate = $gateway->get_exchange_rate($token);
+        }
+
+        $total_paid = array_sum($payments_unconfirmed);
+        $total_paid_fiat = $total_paid * $rate;
+        $to_pay = get_post_meta($order_id, $token . ' total', true);
+        $max_underpayment = $max_underpayment_fiat / $rate;
+        $min_overpayment = $min_overpayment_fiat / $rate;
+        if ($total_paid > 0) {
+            $currencies = array($gateway->get_currency_json($order_id, $token));
+        }
+
+        if ($total_paid - $to_pay > $min_overpayment) {
+            $overpaid = true;
+        }
+    }
+
+    $fiat_value = doubleval($order->get_total());
+    $status_url = $gateway->get_status_link($order_id);
+
+    $redirect_url = $gateway->get_return_url( $order );
+
+    $status = $order->get_status();
+    $payment_status = 'pending payment';
+    if ($status == 'completed' || $status == 'processing') {
+        $payment_status = 'paid';
+    }
+
+    if ($status == 'on-hold' && ($fiat_value - $total_paid_fiat) < $max_underpayment_fiat) {
+        $payment_status = 'waiting for confirmations';
+    } elseif ($status == 'on-hold' && $total_paid_fiat > 0) {
+        $payment_status = 'partial payment';
+    }
+
+    $content = '<div class="woocommerce">';
+    $content .= '<h2 class="section-title section-title-normal">
+                    <span class="section-title-main">Order overview</span>
+                    <small>#'. $order->get_id() .'</small>
+                </h2>';
+    $content .= '<div class="row">';
+    $content .= '<div class="col medium-3">&nbsp;</div>';
+    $content .= '<div class="col medium-6">';
+    $content .= '<table class="woocommerce-table woocommerce-table--order-details shop_table order_details">
+                    <tr class="woocommerce-table__line-item order_item">
+                        <th>Payment status</th>
+                        <td>' . ucwords($payment_status) . '</td>
+                    </tr>';
+    if ($token && $payment_status !== 'pending payment') {
+        $content .= '<tr class="woocommerce-table__line-item order_item">
+                        <th>Selected token</th>
+                        <td>' . strtoupper($token) . '</td>
+                    </tr>';
+
+        $blockExplorer = null;
+        $address = get_post_meta($order_id, $token . ' address', true);
+        foreach ($currencies as $currency) {
+            if ($currency['code'] == strtoupper($token)) {
+                $blockExplorer = sprintf($currency['blockExplorer'], $address);
+            }
+        }
+
+        if ($address && $blockExplorer) {
+            $content .= '<tr class="woocommerce-table__line-item order_item">
+                            <th>Payment address</th>
+                            <td><a href="'.$blockExplorer.'" target="_blank">' . $address . '</a></td>
+                        </tr>';
+        }
+    }
+
+    if (!$overpaid) {
+        $content .= '<tr class="woocommerce-table__line-item order_item">
+                         <th>Total</th>
+                         <td>' . wc_price($fiat_value) . '</td>
+                     </tr>';
+    }
+    if ($total_paid > 0 && !$overpaid) {
+        $content .= '<tr class="woocommerce-table__line-item order_item">
+                         <th>Paid</th>
+                         <td>' . wc_price($total_paid_fiat) . '</td>
+                     </tr>';
+        if (($to_pay - $total_paid) > $max_underpayment) {
+            $content .= '<tr class="woocommerce-table__line-item order_item">
+                             <th>To pay</th>
+                             <td>' . wc_price($fiat_value - $total_paid_fiat) . '</td>
+                         </tr>';
+        }
+    }
+    $content .= '</table>';
+
+
+
+    // $content .= '<h6 class="section-title section-title-normal">
+    //                 <span class="section-title-main">Payment status</span>
+    //                 <small>#'. $payment_status .'</small>
+    //             </h6>';
+    // $content .= '</div>';
+
+    // $content .= '<div class="col medium-6 text-right">';
+    $content .= '<div class="text-right">';
+        if (!in_array($payment_status, array('waiting for confirmations', 'paid'))) {
+            $content .= '<a href="#" class="button" id="paybear-all">Pay with Crypto</a>';
+            $content .= '<div id="paybear" data-autoopen="true" style="display: none" data-fiat-value="'.$fiat_value.'"
+                                                         data-currencies="'.esc_html(json_encode($currencies)).'"
+                                                         data-status="'.$status_url.'"
+                                                         data-redirect="'.$redirect_url.'"
+                                                         data-fiat-currency="'.$fiat_currency.'"
+                                                         data-fiat-sign="'.$fiat_sign.'"
+                                                         data-min-overpayment-fiat="'.$min_overpayment_fiat.'"
+                                                         data-max-underpayment-fiat="'.$max_underpayment_fiat.'">';
+            $content .= file_get_contents(plugin_dir_url(__FILE__) . 'assets/form/index.html');
+        }
+        if ($payment_status == 'waiting for confirmations') {
+            $content .= '<a href="" class="button">Refresh</a>';
+        }
+
+        if ($payment_status == 'paid') {
+            $content .= '<a href="'.$redirect_url.'" class="button">Continue</a>';
+        }
+    $content .= '</div>';
+
+    $content .= '</div>';
+    $content .= '</div>';
+
+    // $content = '<h3 class="section-title section-title-normal">Order overview <small>#'.$order->get_id().' ('.$order->get_status().')</small></h3>';
+    // $content .= '<h3 class="section-title section-title-normal">Status <small>' . $payment_status . '</small></h3>';
+    // // $content .= '<div>Payment status - ' . $payment_status . '</div>';
+    // if ($token && $total_paid > 0) {
+    //     $content .= '<div>Selected token - '.$token.'</div>';
+    //     $content .= '<div>Total to pay - ' . $fiat_value . '</div>';
+    //     if (($fiat_value - $total_paid_fiat) > 0) {
+    //         $content .= '<div>Paid - '. $total_paid_fiat .' ('.$total_paid.')</div>';
+    //         $content .= '<div>Left to pay - ' . round($fiat_value - $total_paid_fiat, 2) . '</div>';
+    //     }
+    // }
+    //
+    // if (!in_array($payment_status, array('waiting for confirmations', 'paid'))) {
+    //     $content .= '<div><a href="#" class="button" id="paybear-all">Confirm & Pay</a></div>';
+    //     $content .= '<div id="paybear" style="display: none" data-fiat-value="'.$fiat_value.'"
+    //                                                      data-currencies="'.esc_html(json_encode($currencies)).'"
+    //                                                      data-status="'.$status_url.'"
+    //                                                      data-redirect="'.$redirect_url.'"
+    //                                                      data-fiat-currency="'.$fiat_currency.'"
+    //                                                      data-fiat-sign="'.$fiat_sign.'"
+    //                                                      data-min-overpayment-fiat="'.$min_overpayment_fiat.'"
+    //                                                      data-max-underpayment-fiat="'.$max_underpayment_fiat.'">';
+    //     $content .= file_get_contents(plugin_dir_url(__FILE__) . 'assets/form/index.html');
+    // }
+
+    return $content;
+}
+
 function paybear_gateway_load() {
 
     if ( ! class_exists( 'WC_Payment_Gateway' ) ) {
@@ -33,7 +268,7 @@ function paybear_gateway_load() {
      *
      * @class 		WC_Gateway_Paybear
      * @extends		WC_Gateway_Paybear
-     * @version		1.0
+     * @version		1.1
      * @package		WooCommerce/Classes/Payment
      */
 class WC_Gateway_Paybear extends WC_Payment_Gateway {
@@ -53,7 +288,7 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 	/**
 	 * Returns the *Singleton* instance of this class.
 	 *
-	 * @return Singleton The *Singleton* instance.
+	 * @return WC_Gateway_Paybear The *Singleton* instance.
 	 */
 	public static function get_instance() {
 		if ( null === self::$instance ) {
@@ -114,7 +349,7 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 		$plugin_url = plugin_dir_url( __FILE__ );
 
 		$this->id           = 'paybear';
-		$this->icon         = apply_filters( 'woocommerce_paybear_icon', $plugin_url.'assets/images/icons/crypto.png' );
+		// $this->icon         =
 		$this->assetDir     = $plugin_url.'assets/form/';
 		$this->enabled      = $this->get_option( 'enabled' );
 		$this->has_fields   = false;
@@ -128,15 +363,30 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 		add_action( 'plugins_loaded', array( $this, 'init' ) );
 	}
 
-	public function init() {
+	public function get_icon()
+    {
+        $plugin_url = plugin_dir_url( __FILE__ );
+        $style = version_compare( WC()->version, '2.6', '>=' ) ? 'style="margin-left: 0.2em; max-height: 24px; max-width: 24px; float: left"' : '';
 
+        $icons = ['btc', 'eth', 'bch', 'ltc', 'dash'];
+        $currencies = array_keys($this->get_currencies());
+        $icon = '<span style="float: right">';
+
+        foreach (array_intersect($icons, $currencies) as $token) {
+            $icon .= '<img src="'.apply_filters( 'woocommerce_gateway_icon', $plugin_url.'assets/images/icons/'.$token.'.svg' ).'" '.$style.'>';
+        }
+        $icon .= '</span>';
+
+        return $icon;
+    }
+
+    public function init() {
 		// Define user set variables
 		$this->title 			= $this->get_option( 'title' );
 		$this->description 		= $this->get_option( 'description' );
 		$this->merchant_id 			= $this->get_option( 'merchant_id' );
 		$this->ipn_secret   = $this->get_option( 'ipn_secret' );
 		$this->debug_email			= $this->get_option( 'debug_email' );
-
 
 		$this->form_submission_method = $this->get_option( 'form_submission_method' ) == 'yes' ? true : false;
 
@@ -158,7 +408,7 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 		add_filter( 'woocommerce_available_payment_gateways', array($this, 'available_gateways') );
 
 		add_filter('autoptimize_filter_js_exclude', array($this, 'autoptimize_filter'),10,1);
-
+		self::plugin_activation();
     }
 
     function autoptimize_filter($exclude) {
@@ -327,7 +577,6 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
      */
     function init_form_fields()
     {
-
     	$this->form_fields = array(
 			'enabled' => array(
 							'title' => __( 'Enable/Disable', 'woocommerce' ),
@@ -349,14 +598,14 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 							'title' => __( 'Title', 'woocommerce' ),
 							'type' => 'text',
 							'description' => __( 'This controls the title which the user sees during checkout.', 'woocommerce' ),
-							'default' => __( 'Crypto Payments', 'woocommerce' ),
+							'default' => __( 'Crypto (PayBear.io)', 'woocommerce' ),
 							'desc_tip'      => true,
 						),
 			'description' => array(
 							'title' => __( 'Description', 'woocommerce' ),
 							'type' => 'textarea',
 							'description' => __( 'This controls the description which the user sees during checkout.', 'woocommerce' ),
-							'default' => __( 'Bitcoin (BTC), Ethereum (ETH) and other crypto currencies', 'woocommerce' )
+							'default' => __( '(BTC/ETH/LTC and more)', 'woocommerce' )
 						),
 
 			'min_overpayment' => array(
@@ -401,29 +650,35 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 	function process_payment( $order_id ) {
 
 		$order          = wc_get_order( $order_id );
+		$paybear_page_id = $this->get_option('payment_page_id');
+		$redirect = add_query_arg(['order_id' => $order->get_id(), 'key' => $order->get_order_key()], get_permalink($paybear_page_id));
 
 		return array(
-			    //'result' 	=> 'failure',
 				'result' 	=> 'success',
-				'redirect'	=> $this->get_return_url( $order ),
+				'redirect'  => $redirect
 		);
 
 	}
 
+	function thankyou_page( $order_id ) {
+	    return '';
+	}
     /**
      * Order received page.
      *
      * @access public
      * @return void
      */
-    function thankyou_page( $order_id ) {
+    function thankyou_page2( $order_id ) {
         $order = wc_get_order($order_id);
 	    $status = $order->get_status();
 	    $underpaid = false;
 
+	    $str = '';
+
 	    if ($status=='on-hold' ) {
-		    echo '<p>' . __( 'Waiting for payment confirmation.', 'woocommerce' ) . '</p>';
-		    echo '<p>' . __( 'Once your payment is confirmed, your order will be processed automatically.', 'woocommerce' ) . '</p>';
+		    $str .= '<p>' . __( 'Waiting for payment confirmation.', 'woocommerce' ) . '</p>';
+		    $str .= '<p>' . __( 'Once your payment is confirmed, your order will be processed automatically.', 'woocommerce' ) . '</p>';
 
 		    $underpaid = false;
 		    if ($token = get_post_meta($order_id, 'Token Selected', true)) {
@@ -439,43 +694,44 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
         }
 
 	    if ($status=='pending' || $status=='failed') {
-		    echo '<p>' . __( 'Once your payment is confirmed, your order will be processed automatically.', 'woocommerce' ) . '</p>';
+		    $str .= '<p>' . __( 'Once your payment is confirmed, your order will be processed automatically.', 'woocommerce' ) . '</p>';
 	    }
 
 	    if ($status=='pending' || $status=='failed' || $underpaid) {
 
 		    $js  = $this->assetDir . 'paybear.js';
 		    $css = $this->assetDir . 'paybear.css';
-		    echo '<script src="' . $js . '"></script><link rel="stylesheet" href="' . $css . '">';
-		    readfile( dirname( __FILE__ ) . '/assets/form/index.html' );
+		    $str .= '<script src="' . $js . '"></script><link rel="stylesheet" href="' . $css . '">';
+		    $str .= file_get_contents( dirname( __FILE__ ) . '/assets/form/index.html' );
 		    //readfile(dirname(__FILE__).'/assets/form/inline.html');
 
 		    //$url = $this->get_address_link( $order_id );
 		    //$this->payment_button( 'Pay Now', 'paybear-all', $url );
 
 		    $json = json_encode($this->get_json($order_id));
-		    ?>
-            <!--<button id="paybear-all">Pay with Crypto</button>-->
-            <script>
-                (function () {
-                    var options = <?php echo $json ?>;
-                    window.paybear = new Paybear(options);
-                })();
-            </script>
-		    <?php
+		    $str .= '<button id="paybear-all">Pay Now</button>';
+		    $str .= "<script>\n";
+		    $str .= "(function () {\n";
+		    $str .= "var options = $json;\n";
+		    $str .= "window.paybear = new Paybear(options);\n";
+		    $str .= "})();\n";
+		    $str .= "</script>\n";
 
 	    }
+
+	    return $str;
     }
 
 	function order_received_text( $str, $order_id ) {
 		$order = wc_get_order($order_id);
 		$status = $order->get_status();
+		$str = '';
 
 		if ($status=='pending') {
-			$str = $str . ' ' . __( 'Please select the option below to pay.' );
+			$str = $str . ' ' . __( 'Thank you. Please select the option below to pay.' );
 		}
 
-		return $str;
+		return $str . $this->thankyou_page2( $order->get_id() );
 	}
 
 
@@ -625,7 +881,7 @@ Tip 2)  If you are sending from an exchange, be sure to correctly factor in thei
  
 Tip 3) Be sure to successfully send your payment before the countdown timer expires.
 This timer is setup to lock in a fixed rate for your payment. Once it expires, rates may change.', 'woocommerce'),
-                    $underpaidCrypto, strtoupper($token), get_woocommerce_currency_symbol(), $underpaid, strtoupper($token), strtoupper( $token ), get_woocommerce_currency());
+                    $underpaidCrypto, strtoupper($token), get_woocommerce_currency_symbol(), $underpaid, strtoupper( $token ), get_woocommerce_currency());
 	                $order->add_order_note( $note, 1, false );
 
 	                update_post_meta($order_id, $token . ' order timestamp', time()); //extend payment window
@@ -652,7 +908,6 @@ This timer is setup to lock in a fixed rate for your payment. Once it expires, r
 	function check_ipn_response() {
 
 		@ob_clean();
-
 		if (isset($_GET['address']) && isset($_GET['order_id'])) { //address request
 		    $json = $this->get_currency_json($_GET['order_id'], $_GET['address']);
 			wp_send_json($json);
@@ -697,8 +952,8 @@ This timer is setup to lock in a fixed rate for your payment. Once it expires, r
 	    }
 
 	    $response = array(
-            //'button' => '#paybear-all',
-            'modal' => false,
+            'button' => '#paybear-all',
+            'modal' => true,
             'currencies' => $currencies,
 		    //'currenciesUrl' => $this->get_address_link($order_id),
             'fiatValue' => doubleval($value),
@@ -834,7 +1089,14 @@ This timer is setup to lock in a fixed rate for your payment. Once it expires, r
             }
         }
 
-        return isset($cache->$token->mid) ? $cache->$token->mid : null;
+        $rate = isset($cache->$token->mid) ? $cache->$token->mid : null;
+        $shop_currency = strtolower(get_woocommerce_currency());
+
+        if (isset($cache->$shop_currency)) {
+            return $cache->$token->mid/$cache->$shop_currency->mid;
+        }
+
+        return $rate;
     }
 
     public function update_crypto_total($token, $order_id, $total)
@@ -899,7 +1161,7 @@ This timer is setup to lock in a fixed rate for your payment. Once it expires, r
 
     public function sanitize_token( $token ) {
 	    $token = strtolower($token);
-	    $token = preg_replace('/[^a-z]/', '', $token);
+        $token = preg_replace('/[^a-z0-9:]/', '', $token);
 	    return $token;
     }
 
@@ -909,6 +1171,60 @@ This timer is setup to lock in a fixed rate for your payment. Once it expires, r
 	private function get_max_underpayment() {
 		return doubleval($this->get_option( 'max_underpayment', 0.01 ));
 	}
+
+    public static function plugin_activation()
+    {
+        $self = self::get_instance();
+
+        $self->settings['payment_page_id'] = null;
+        update_option( $self->get_option_key(), apply_filters( 'woocommerce_settings_api_sanitized_fields_' . $self->id, $self->settings ) );
+
+        $page_id = $self->get_option('payment_page_id');
+
+        if ($page_id && get_post_type($page_id) != 'paybear_payment') {
+            wp_delete_post($page_id);
+        }
+
+        if (!$page_id) {
+            add_action('init', function () use ($self) {
+                $guid = home_url('/paybear_payment/paybear');
+
+                $page_id = self::get_post_id_from_guid($guid);
+                if (!$page_id) {
+                    $page_data = array(
+                        'post_status'    => 'publish',
+                        'post_type'      => 'paybear_payment',
+                        // 'post_author'    => 1,
+                        // 'post_name'      => 'paybear',
+                        'post_title'     => 'Paybear',
+                        'post_content'   => '[paybear_payment_widget]',
+                        // 'post_parent'    => $parent_id,
+                        'comment_status' => 'closed',
+                        'guid' => $guid,
+                    );
+                    $page_id = wp_insert_post( $page_data );
+                }
+
+                $self->settings['payment_page_id'] = $page_id;
+                update_option( $self->get_option_key(), apply_filters( 'woocommerce_settings_api_sanitized_fields_' . $self->id, $self->settings ) );
+            });
+        }
+    }
+
+
+    public static function plugin_deactivation()
+    {
+        $post_id = self::get_instance()->get_option('payment_page_id');
+        if ($post_id) {
+            wp_delete_post($post_id, true);
+        }
+    }
+
+    public static function get_post_id_from_guid( $guid ){
+        global $wpdb;
+        return $wpdb->get_var( $wpdb->prepare( "SELECT id FROM $wpdb->posts WHERE guid=%s", $guid ) );
+
+    }
 
 }
 
@@ -921,3 +1237,8 @@ class WC_Paybear extends WC_Gateway_Paybear {
 
 	$GLOBALS['wc_paybear'] = WC_Gateway_Paybear::get_instance();
 }
+
+register_activation_hook(__FILE__, function () {
+
+});
+register_deactivation_hook(__FILE__, array('WC_Gateway_Paybear', 'plugin_deactivation'));
