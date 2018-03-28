@@ -697,28 +697,6 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 		    $str .= '<p>' . __( 'Once your payment is confirmed, your order will be processed automatically.', 'woocommerce' ) . '</p>';
 	    }
 
-	    if ($status=='pending' || $status=='failed' || $underpaid) {
-
-		    $js  = $this->assetDir . 'paybear.js';
-		    $css = $this->assetDir . 'paybear.css';
-		    $str .= '<script src="' . $js . '"></script><link rel="stylesheet" href="' . $css . '">';
-		    $str .= file_get_contents( dirname( __FILE__ ) . '/assets/form/index.html' );
-		    //readfile(dirname(__FILE__).'/assets/form/inline.html');
-
-		    //$url = $this->get_address_link( $order_id );
-		    //$this->payment_button( 'Pay Now', 'paybear-all', $url );
-
-		    $json = json_encode($this->get_json($order_id));
-		    $str .= '<button id="paybear-all">Pay Now</button>';
-		    $str .= "<script>\n";
-		    $str .= "(function () {\n";
-		    $str .= "var options = $json;\n";
-		    $str .= "window.paybear = new Paybear(options);\n";
-		    $str .= "})();\n";
-		    $str .= "</script>\n";
-
-	    }
-
 	    return $str;
     }
 

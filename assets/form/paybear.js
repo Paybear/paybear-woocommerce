@@ -78,6 +78,7 @@
             redirectTimeout: 5,
             minOverpaymentFiat: 1,
             maxUnderpaymentFiat: 0.01,
+            statusInterval: 10000,
         };
 
         this.options = defaults;
@@ -182,11 +183,29 @@
             } else {
                 try {
                     var response = JSON.parse(xhr.responseText);
-                    if (Array.isArray(response) || response.title) {
+                    if (Array.isArray(response) || Object.prototype.toString.call(response) === '[object Object]') {
                         handleCurrenciesSuccess();
                         var currencies = response;
-                        if (response.title) {
-                            currencies = [response];
+                        if (Object.prototype.toString.call(response) === '[object Object]') {
+                            if (response.title) { // single currency
+                                currencies = [response];
+                            } else {
+                                function isNumber(n) {
+                                    return !isNaN(parseFloat(n)) && isFinite(n);
+                                }
+
+                                currencies = [];
+                                for(var i in response) {
+                                    if (response.hasOwnProperty(i)) {
+                                        if (isNumber(i)) {
+                                            currencies[i] = response[i];
+                                        } else {
+                                            currencies.push(response[i]);
+                                        }
+                                    }
+                                }
+                            }
+
                         }
                         state.currencies  = currencies;
 
@@ -200,6 +219,7 @@
                         handleCurrenciesError.call(that);
                     }
                 } catch(e) {
+                    console.log(e);
                     handleCurrenciesError.call(that);
                 }
             }
@@ -253,6 +273,7 @@
                                 that.state.selected = index;
                                 paymentStart.call(that);
                             } catch(e) {
+                                console.log(e);
                                 handleCurrencyError.call(that);
                             }
                         }
@@ -547,7 +568,7 @@
                 xhr.open('GET', url, true);
                 xhr.setRequestHeader('Content-Type', 'application/json');
                 xhr.send();
-            }, 10000);
+            }, options.statusInterval);
         }
     }
 
@@ -679,14 +700,21 @@
                     paymentHelper.querySelector('.block-explorer-li').style.display = 'block';
                     paymentHelper.querySelector('.P-block-explorer').setAttribute('href', blockExplorerLink);
                 }
-                if (paymentHelper.clientHeight > document.querySelector('.P-box__inner').clientHeight) {
-                    paymentHelper.style.overflowY = 'scroll';
-                }
+                paymentHelperOverflow();
+                window.addEventListener('resize', paymentHelperOverflow);
+
             });
             paymentHelperBtn.addEventListener('click', function () {
+                window.removeEventListener('resize', paymentHelperOverflow);
                 paymentConfirming.removeAttribute('style');
                 paymentHelper.style.display = 'none';
             });
+            function paymentHelperOverflow() {
+                paymentHelper.removeAttribute('style');
+                if (paymentHelper.clientHeight > document.querySelector('.P-box__inner').clientHeight) {
+                    paymentHelper.style.overflowY = 'scroll';
+                }
+            }
 
             //header
             that.paymentHeaderTitle.textContent = 'Confirming Payment';
@@ -733,9 +761,11 @@
 
         var paymentStartScreen = document.querySelector('.P-Payment__start');
         var paymentConfirming = document.querySelector('.P-Payment__confirming');
+        var paymentConfirmingHelper = document.querySelector('.P-Payment__confirming-helper');
         var paymentConfirmed = document.querySelector('.P-Payment__confirmed');
         paymentStartScreen.style.display = 'none';
         paymentConfirming.style.display = 'none';
+        paymentConfirmingHelper.style.display = 'none';
         paymentConfirmed.removeAttribute('style');
 
         //header
