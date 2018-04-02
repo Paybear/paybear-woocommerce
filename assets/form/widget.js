@@ -14,7 +14,7 @@
         minOverpaymentFiat: container.getAttribute('data-min-overpayment-fiat'),
         maxUnderpaymentFiat: container.getAttribute('data-max-underpayment-fiat'),
         modal: true,
-        enablePoweredBy: false,
+        enablePoweredBy: true,
         redirectPendingTo: container.getAttribute('data-redirect')
     });
 
