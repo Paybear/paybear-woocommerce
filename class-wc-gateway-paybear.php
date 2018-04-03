@@ -331,15 +331,13 @@ class WC_Gateway_Paybear extends WC_Payment_Gateway {
 
     public function get_icon()
     {
-        $plugin_url = plugin_dir_url( __FILE__ );
-        $style = version_compare( WC()->version, '2.6', '>=' ) ? 'style="margin-left: 0.2em; max-height: 24px; max-width: 24px; float: left"' : '';
+        $style = version_compare( WC()->version, '2.6', '>=' ) ? 'style="margin-left: 0.5em; max-height: 24px; max-width: 24px; float: left"' : '';
 
-        $icons = ['btc', 'eth', 'bch', 'ltc', 'dash'];
-        $currencies = array_keys($this->get_currencies());
+        $currencies = $this->get_currencies();
         $icon = '<span style="float: right">';
 
-        foreach (array_intersect($icons, $currencies) as $token) {
-            $icon .= '<img src="'.apply_filters( 'woocommerce_gateway_icon', $plugin_url.'assets/images/icons/'.$token.'.svg' ).'" '.$style.'>';
+        foreach (array_slice($currencies, 0, 5) as $currency) {
+            $icon .= '<img src="'.$currency['icon'].'" '.$style.'>';
         }
         $icon .= '</span>';
 
