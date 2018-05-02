@@ -193,7 +193,7 @@ function paybear_payment_widget_shortcode($atts = [], $content = null, $tag = ''
                                                          data-fiat-sign="'.$fiat_sign.'"
                                                          data-min-overpayment-fiat="'.$min_overpayment_fiat.'"
                                                          data-max-underpayment-fiat="'.$max_underpayment_fiat.'">';
-            $content .= file_get_contents(plugin_dir_url(__FILE__) . 'assets/form/index.html');
+            $content .= file_get_contents(plugin_dir_path(__FILE__) . 'assets/form/index.html');
         }
         if ($payment_status === 'waiting for confirmations') {
             $content .= '<a href="" class="button">Refresh</a>';
@@ -807,21 +807,21 @@ This timer is setup to lock in a fixed rate for your payment. Once it expires, r
                     $underpaidCrypto = $toPay - $totalPaid;
                     $underpaid       = round( $underpaidCrypto * $this->get_exchange_rate($token), 2);
                     $note            = sprintf(__( 'Looks like you underpaid %s %s (%s %s)
- 
+
 Don\'t worry, here is what to do next:
- 
+
 Contact the merchant directly and…
 -Request details on how you can pay the difference.
 -Request a refund and create a new order.
- 
- 
+
+
 Tips for Paying with Crypto:
- 
+
 Tip 1) When paying, ensure you send the correct amount in %s.
 Do not manually enter the %s Value.
- 
+
 Tip 2)  If you are sending from an exchange, be sure to correctly factor in their withdrawal fees.
- 
+
 Tip 3) Be sure to successfully send your payment before the countdown timer expires.
 This timer is setup to lock in a fixed rate for your payment. Once it expires, rates may change.', 'woocommerce'),
                     $underpaidCrypto, strtoupper($tokenCode), get_woocommerce_currency_symbol(), $underpaid, strtoupper( $tokenCode ), get_woocommerce_currency());
