@@ -185,6 +185,8 @@ function paybear_payment_widget_shortcode($atts = array(), $content = null, $tag
     }
     $content .= '</table>';
 
+    $rate_lock_time = $gateway->get_option('rate_lock_time', 15) * 60;
+
     $content .= '<div class="text-right">';
     if (!in_array($payment_status, array('waiting for confirmations', 'paid'))) {
         $content .= '<a href="#" class="button" id="paybear-all">Pay with Crypto</a>';
@@ -195,6 +197,7 @@ function paybear_payment_widget_shortcode($atts = array(), $content = null, $tag
                                                          data-fiat-currency="' . $fiat_currency . '"
                                                          data-fiat-sign="' . $fiat_sign . '"
                                                          data-min-overpayment-fiat="' . $min_overpayment_fiat . '"
+                                                         data-rate_lock_time="' . $rate_lock_time . '"
                                                          data-max-underpayment-fiat="' . $max_underpayment_fiat . '">';
         $content .= file_get_contents(plugin_dir_path(__FILE__) . 'assets/form/index.html');
     }
