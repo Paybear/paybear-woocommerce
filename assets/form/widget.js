@@ -15,7 +15,8 @@
         maxUnderpaymentFiat: container.getAttribute('data-max-underpayment-fiat'),
         modal: true,
         enablePoweredBy: true,
-        redirectPendingTo: container.getAttribute('data-redirect')
+        redirectPendingTo: container.getAttribute('data-redirect'),
+        timer: container.getAttribute('data-rate_lock_time')
     });
 
     function htmlDecode(input){
