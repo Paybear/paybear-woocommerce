@@ -87,6 +87,7 @@ function paybear_payment_widget_shortcode($atts = array(), $content = null, $tag
     $max_underpayment = 0;
     $min_overpayment = 0;
     $overpaid = false;
+    $tx_price = ($gateway->get_option('network_fees')>0) ? $gateway->get_option('network_fees') : 0;
 
     $currencies = $gateway->get_currency_json($order_id);
     if ($token = get_post_meta($order_id, 'Token Selected', true)) {
@@ -112,7 +113,7 @@ function paybear_payment_widget_shortcode($atts = array(), $content = null, $tag
         }
     }
 
-    $fiat_value = (float) $order->get_total();
+    $fiat_value = (float) ($order->get_total() + $tx_price);
     $status_url = $gateway->get_status_link($order_id);
 
     $redirect_url = $gateway->get_return_url($order);
@@ -618,6 +619,12 @@ function paybear_gateway_load()
                     'type' => 'text',
                     'description' => __("Lock Fiat to Crypto exchange rate for this long (in minutes, 15 is the recommended minimum)", 'woocommerce'),
                     'default' => '15'
+                ),
+                'network_fees' => array(
+                    'title' => __('Should we charge transaction fee from customers? Leave empty, if not.', 'woocommerce'),
+                    'type' => 'text',
+                    'description' => __("This amount will be added to the order price.", 'woocommerce'),
+                    'default' => ''
                 )
 
             );
@@ -1048,13 +1055,13 @@ This timer is setup to lock in a fixed rate for your payment. Once it expires, r
         }
 
 
-        public static function log($message)
+        public static function log($log)
         {
-            if (empty(self::$log)) {
-                self::$log = wc_get_logger();
+            if ( is_array( $log ) || is_object( $log ) ) {
+                error_log( print_r( $log, true ) );
+            } else {
+                error_log( $log );
             }
-
-            self::$log->add('woocommerce-gateway-paybear', $message);
         }
 
         function get_exchange_rate($token)
